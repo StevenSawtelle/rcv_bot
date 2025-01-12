@@ -11,8 +11,21 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
-async def ranked_poll(ctx, title: str, rankings: int, *options):
-    """Create a ranked-choice voting poll with threads for each rank."""
+async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
+    """Create a ranked-choice voting poll with options formatted with backslashes."""
+    if len(raw_options) < 2:
+        await ctx.send("You need at least two options to create a ranked poll!")
+        return
+    if len(raw_options) > 10:
+        await ctx.send("You can only have up to 10 options.")
+        return
+    if rankings < 1 or rankings > len(raw_options):
+        await ctx.send("Rankings must be at least 1 and no more than the number of options.")
+        return
+
+    # Parse the options by splitting on backslashes and removing any extra spaces
+    options = [opt.strip() for opt in ' '.join(raw_options).split('\\') if opt.strip()]
+    
     if len(options) < 2:
         await ctx.send("You need at least two options to create a ranked poll!")
         return
