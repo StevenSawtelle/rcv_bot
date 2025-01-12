@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
+from copy import deepcopy
 
 intents = discord.Intents.default()
 intents.members = True
@@ -120,51 +121,54 @@ async def on_reaction_remove(reaction, user):
     await update_results_message(poll)
 
 async def update_results_message(poll):
-    """Update the live results message with a bar graph, elimination rounds, and sorted order."""
+    """Update the live results message with proper tie handling and ordering."""
     rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
     for rank, rank_votes in poll["votes"].items():
         for user_id, option in rank_votes.items():
             rankings[user_id].append(option)
 
-    winner, final_vote_counts, elimination_order = ranked_choice_voting(poll["options"], rankings)
+    winners, final_rankings, elimination_order = ranked_choice_voting(poll["options"], rankings)
 
-    color_blocks = {
-        1: '🟩',
-        2: '🟨',
-        3: '🟦',
-        4: '🟥',
-        5: '🟧',
-        6: '🟪',
-        7: '🟫',
-        8: '🟩🟩',
-        9: '🟨🟨',
-        10: '🟦🟦',
-    }
-
-    max_votes = max(final_vote_counts.values(), default=1)
-    sorted_options = []
-
-    elimination_round_dict = {option: round for option, round in elimination_order}
-
-    if winner:
-        sorted_options.append((winner, final_vote_counts[winner], 0))
-
-    for option, count in final_vote_counts.items():
-        if option != winner:
-            round_eliminated = elimination_round_dict.get(option, len(poll["options"]) + 1)
-            sorted_options.append((option, count, round_eliminated))
-
+    # Create results display
     graph = ""
-    for option, count, round_eliminated in sorted_options:
-        vote_rank = min(count, 10)
-        emoji = color_blocks.get(vote_rank, '⬛')
-        graph += f"{option}: {count} votes {emoji * (count * 10 // max_votes)}"
-        if round_eliminated == 0:
-            graph += " (Winner)"
-        else:
-            graph += f" (Eliminated in Round {round_eliminated})"
-        graph += "\n"
-
+    max_votes = max((votes for _, _, votes in final_rankings), default=1)
+    
+    # Group results by rank
+    rank_groups = {}
+    for option, rank, votes in final_rankings:
+        if rank not in rank_groups:
+            rank_groups[rank] = []
+        rank_groups[rank].append((option, votes))
+    
+    # Display results in order of rank
+    for rank in sorted(rank_groups.keys()):
+        options_in_rank = rank_groups[rank]
+        
+        # Sort options within same rank by votes
+        options_in_rank.sort(key=lambda x: (-x[1], x[0]))  # Sort by votes (desc) then name
+        
+        for option, votes in options_in_rank:
+            # Create vote bar
+            vote_percentage = votes * 10 // max(max_votes, 1)
+            bar = "🟩" * max(1, vote_percentage)
+            
+            # Add status label
+            if option in winners:
+                status = " (Winner)"
+                if len(winners) > 1:
+                    status = " (Tied Winner)"
+            else:
+                round_eliminated = next(round_num for opt, round_num in elimination_order if opt == option)
+                status = f" (Eliminated in Round {round_eliminated}"
+                
+                # Check for ties in same elimination round
+                same_round = [opt for opt, rnd in elimination_order if rnd == round_eliminated]
+                if len(same_round) > 1:
+                    status += " - Tied"
+                status += ")"
+            
+            graph += f"{option}: {votes} votes {bar}{status}\n"
+    
     results_embed = discord.Embed(
         title="Current Results (Ranked Choice Voting)",
         description=graph,
@@ -172,37 +176,111 @@ async def update_results_message(poll):
     )
     await poll["results_message"].edit(embed=results_embed)
 
+def get_preference_count(option, rank, rankings):
+    """Count how many times an option appears at a specific rank."""
+    count = 0
+    for voter_ranks in rankings.values():
+        if len(voter_ranks) > rank and voter_ranks[rank] == option:
+            count += 1
+    return count
+
+def break_tie(tied_options, rankings, round_number):
+    """
+    Break ties by looking at next preference votes.
+    Returns the options in order from should-be-eliminated-first to should-be-eliminated-last.
+    """
+    max_rank = max(len(ranks) for ranks in rankings.values())
+    
+    # For each rank level, get counts for each tied option
+    for rank in range(max_rank):
+        rank_counts = {option: get_preference_count(option, rank, rankings) for option in tied_options}
+        
+        # If counts differ at this rank, sort by these counts
+        if len(set(rank_counts.values())) > 1:
+            return sorted(tied_options, key=lambda x: rank_counts[x])
+    
+    # If we get here, it's a true tie at all ranks
+    return sorted(tied_options)  # Sort alphabetically for consistent ordering
+
 def ranked_choice_voting(options, rankings):
-    """Perform ranked-choice voting."""
-    vote_counts = {option: 0 for option in options}
+    """
+    Perform ranked-choice voting with proper tie detection and ordering.
+    Returns:
+    - winners: List of winning options (can be multiple in case of tie)
+    - final_rankings: List of tuples (options, rank, votes) in order of finish
+    - elimination_order: List of (option, round_number) in order of elimination
+    """
+    remaining_options = list(options)
     elimination_order = []
+    final_rankings = []
     round_number = 1
-
-    while True:
-        for votes in rankings.values():
-            if votes:
-                vote_counts[votes[0]] += 1
-
+    current_rankings = deepcopy(rankings)
+    
+    while remaining_options:
+        # Count first-choice votes
+        vote_counts = {option: 0 for option in remaining_options}
+        for voter_ranks in current_rankings.values():
+            for option in voter_ranks:
+                if option in remaining_options:
+                    vote_counts[option] += 1
+                    break
+        
         total_votes = sum(vote_counts.values())
-        for option, count in vote_counts.items():
-            if count > total_votes / 2:
-                return option, vote_counts, elimination_order
-
+        if total_votes == 0:
+            # No more valid votes, remaining options are tied for last
+            rank = len(options) - len(final_rankings)
+            final_rankings.extend((opt, rank, 0) for opt in remaining_options)
+            for option in remaining_options:
+                elimination_order.append((option, round_number))
+            break
+        
+        # Check for winners (options with > 50% of votes)
+        majority_threshold = total_votes / 2
+        winners = [opt for opt, count in vote_counts.items() if count > majority_threshold]
+        
+        if winners:
+            # We have winner(s)
+            rank = len(options) - len(final_rankings)
+            final_rankings.extend((opt, rank, vote_counts[opt]) for opt in winners)
+            
+            # Rank remaining options by their final vote counts
+            remaining = set(remaining_options) - set(winners)
+            if remaining:
+                remaining_sorted = sorted(remaining, key=lambda x: vote_counts[x], reverse=True)
+                current_votes = None
+                current_rank = rank + 1
+                
+                for option in remaining_sorted:
+                    if current_votes != vote_counts[option]:
+                        current_votes = vote_counts[option]
+                        current_rank = len(options) - len(final_rankings)
+                    final_rankings.append((option, current_rank, vote_counts[option]))
+                    elimination_order.append((option, round_number))
+            
+            return winners, final_rankings, elimination_order
+        
+        # Find options with fewest votes
         min_votes = min(vote_counts.values())
-        eliminated = [option for option, count in vote_counts.items() if count == min_votes]
-
-        if len(eliminated) == len(vote_counts):
-            return None, vote_counts, elimination_order
-
-        for option in eliminated:
+        to_eliminate = [opt for opt, count in vote_counts.items() if count == min_votes]
+        
+        # All options with same minimum votes are eliminated together
+        rank = len(options) - len(final_rankings)
+        for option in to_eliminate:
+            final_rankings.append((option, rank, vote_counts[option]))
             elimination_order.append((option, round_number))
-            del vote_counts[option]
-            for user_id in rankings.keys():
-                if option in rankings[user_id]:
-                    rankings[user_id].remove(option)
-
-        vote_counts = {option: 0 for option in vote_counts.keys()}
+            remaining_options.remove(option)
+        
         round_number += 1
+        
+        # If only one option remains, it's the winner
+        if len(remaining_options) == 1:
+            winner = remaining_options[0]
+            final_rankings.append((winner, 1, vote_counts[winner]))
+            return [winner], final_rankings, elimination_order
+    
+    return [], final_rankings, elimination_order
+
+
 
 bot.poll_data = {}
 bot.run("")
