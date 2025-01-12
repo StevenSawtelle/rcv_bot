@@ -12,7 +12,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
 async def ranked_poll(ctx, title: str, rankings: int, *options):
-    """Create a ranked-choice voting poll."""
+    """Create a ranked-choice voting poll with threads for each rank."""
     if len(options) < 2:
         await ctx.send("You need at least two options to create a ranked poll!")
         return
@@ -27,7 +27,9 @@ async def ranked_poll(ctx, title: str, rankings: int, *options):
     options_embed = discord.Embed(
         title=title, description=f"Available options:\n{options_text}", color=0x00ff00
     )
-    await ctx.send(embed=options_embed)
+    # Send the main poll message and create a thread
+    poll_message = await ctx.send(embed=options_embed)
+    poll_thread = await poll_message.create_thread(name=f"Poll - {title}")
 
     poll_data = {
         "options": options,
@@ -42,12 +44,13 @@ async def ranked_poll(ctx, title: str, rankings: int, *options):
             description="React with the emoji corresponding to your choice. You can only select one option.",
             color=0x0000ff,
         )
-        message = await ctx.send(embed=rank_embed)
-        poll_messages.append(message)
+        # Send the rank message in the created thread
+        rank_message = await poll_thread.send(embed=rank_embed)
+        poll_messages.append(rank_message)
 
         emojis = [f"{i + 1}\u20E3" for i in range(len(options))]
         for emoji in emojis:
-            await message.add_reaction(emoji)
+            await rank_message.add_reaction(emoji)
 
     results_embed = discord.Embed(
         title="Current Results",
