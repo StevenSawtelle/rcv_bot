@@ -62,7 +62,7 @@ async def ranked_poll(ctx, title: str, rankings: int, *options):
 
 @bot.event
 async def on_reaction_add(reaction, user):
-    """Handle reactions for ranking slots and enforce one reaction per user."""
+    """Handle reactions for ranking slots and enforce one reaction per user, no additional reactions, and no duplicate votes for the same option."""
     if user.bot:
         return
 
@@ -76,7 +76,26 @@ async def on_reaction_add(reaction, user):
     rank_index = poll["poll_messages"].index(reaction.message)
     message = poll["poll_messages"][rank_index]
     
+    # List of allowed emojis for this poll
+    allowed_emojis = [f"{i + 1}\u20E3" for i in range(len(poll["options"]))]
+
+    # If the reaction is not allowed, remove it
+    if str(reaction.emoji) not in allowed_emojis:
+        await message.remove_reaction(reaction.emoji, user)
+        return
+
     try:
+        # Track all options that the user has voted for in any rank
+        voted_options = set([poll["votes"][rank][user.id] for rank in range(len(poll["votes"])) if user.id in poll["votes"][rank]])
+
+        # If the user has already voted for this option in another rank, remove the reaction and send a message
+        emoji_index = allowed_emojis.index(reaction.emoji)
+        option = poll["options"][emoji_index]
+        if option in voted_options:
+            await message.remove_reaction(reaction.emoji, user)
+            await user.send(f"You cannot vote for the same option in multiple ranks!")
+            return
+
         # Remove any existing reactions from this user on this ranking message
         if user.id in poll["user_reactions"][rank_index]:
             old_emoji = poll["user_reactions"][rank_index][user.id]
@@ -87,8 +106,6 @@ async def on_reaction_add(reaction, user):
         poll["user_reactions"][rank_index][user.id] = str(reaction.emoji)
 
         # Record the vote
-        emoji_index = [f"{i + 1}\u20E3" for i in range(len(poll["options"]))].index(reaction.emoji)
-        option = poll["options"][emoji_index]
         poll["votes"][rank_index][user.id] = option
 
         await update_results_message(poll)
