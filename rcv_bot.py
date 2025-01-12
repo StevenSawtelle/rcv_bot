@@ -141,7 +141,7 @@ async def on_reaction_remove(reaction, user):
     await update_results_message(poll)
 
 async def update_results_message(poll):
-    """Update the live results message with proper tie handling and ordering."""
+    """Update the live results message with proper tie handling, ordering, and improved bar spacing."""
     rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
     for rank, rank_votes in poll["votes"].items():
         for user_id, option in rank_votes.items():
@@ -152,49 +152,44 @@ async def update_results_message(poll):
     # Create results display
     graph = ""
     max_votes = max((votes for _, _, votes in final_rankings), default=1)
-    
-    # Group results by rank
-    rank_groups = {}
+    bar_length = 20  # Length of the bar in characters for the graph
+
+    # Sort final rankings by the number of votes in descending order
+    final_rankings.sort(key=lambda x: (-x[2], x[1]))  # Sort by votes (desc), then by rank (asc)
+
+    # Now, create the graph with the sorted results
     for option, rank, votes in final_rankings:
-        if rank not in rank_groups:
-            rank_groups[rank] = []
-        rank_groups[rank].append((option, votes))
-    
-    # Display results in order of rank
-    for rank in sorted(rank_groups.keys()):
-        options_in_rank = rank_groups[rank]
+        # Create the vote bar with fixed length, ensuring alignment
+        vote_percentage = (votes * bar_length) // max(max_votes, 1)  # Scale to bar length
+        bar = "🟩" * vote_percentage
+        bar = bar.ljust(bar_length)  # Ensure all bars are the same length
+
+        # Add status label
+        if option in winners:
+            status = " (Winner)"
+            if len(winners) > 1:
+                status = " (Tied Winner)"
+        else:
+            round_eliminated = next(round_num for opt, round_num in elimination_order if opt == option)
+            status = f" (Eliminated in Round {round_eliminated})"
+
+            # Check for ties in the same elimination round
+            same_round = [opt for opt, rnd in elimination_order if rnd == round_eliminated]
+            if len(same_round) > 1:
+                status += " - Tied"
         
-        # Sort options within same rank by votes
-        options_in_rank.sort(key=lambda x: (-x[1], x[0]))  # Sort by votes (desc) then name
-        
-        for option, votes in options_in_rank:
-            # Create vote bar
-            vote_percentage = votes * 10 // max(max_votes, 1)
-            bar = "🟩" * max(1, vote_percentage)
-            
-            # Add status label
-            if option in winners:
-                status = " (Winner)"
-                if len(winners) > 1:
-                    status = " (Tied Winner)"
-            else:
-                round_eliminated = next(round_num for opt, round_num in elimination_order if opt == option)
-                status = f" (Eliminated in Round {round_eliminated}"
-                
-                # Check for ties in same elimination round
-                same_round = [opt for opt, rnd in elimination_order if rnd == round_eliminated]
-                if len(same_round) > 1:
-                    status += " - Tied"
-                status += ")"
-            
-            graph += f"{option}: {votes} votes {bar}{status}\n"
-    
+        # Add the formatted line to the graph
+        graph += f"{option}: {votes} votes {bar} {status}\n"
+
+    # Send the updated results message
     results_embed = discord.Embed(
         title="Current Results (Ranked Choice Voting)",
         description=graph,
         color=0xffa500
     )
     await poll["results_message"].edit(embed=results_embed)
+
+
 
 def get_preference_count(option, rank, rankings):
     """Count how many times an option appears at a specific rank."""
@@ -299,8 +294,6 @@ def ranked_choice_voting(options, rankings):
             return [winner], final_rankings, elimination_order
     
     return [], final_rankings, elimination_order
-
-
 
 bot.poll_data = {}
 bot.run("")
