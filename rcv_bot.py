@@ -2,6 +2,10 @@ import discord
 from discord.ext import commands
 import asyncio
 from copy import deepcopy
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -13,6 +17,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.command()
 async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
     """Create a ranked-choice voting poll with options formatted with backslashes."""
+    # Validate input
     if len(raw_options) < 2:
         await ctx.send("You need at least two options to create a ranked poll!")
         return
@@ -23,8 +28,9 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
         await ctx.send("Rankings must be at least 1 and no more than the number of options.")
         return
 
-    # Parse the options by splitting on backslashes and removing any extra spaces
+    # Parse options
     options = [opt.strip() for opt in ' '.join(raw_options).split('\\') if opt.strip()]
+    logging.debug(f"Parsed options: {options}")
     
     if len(options) < 2:
         await ctx.send("You need at least two options to create a ranked poll!")
@@ -37,17 +43,16 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
         return
 
     options_text = "\n".join(f"{i + 1}. {option}" for i, option in enumerate(options))
-    options_embed = discord.Embed(
-        title=title, description=f"Available options:\n{options_text}", color=0x00ff00
-    )
-    # Send the main poll message and create a thread
+    options_embed = discord.Embed(title=title, description=f"Available options:\n{options_text}", color=0x00ff00)
+    
+    # Create poll message and thread
     poll_message = await ctx.send(embed=options_embed)
     poll_thread = await poll_message.create_thread(name=f"Poll - {title}")
 
     poll_data = {
         "options": options,
         "votes": {i: {} for i in range(rankings)},
-        "user_reactions": {i: {} for i in range(rankings)},  # Track reactions by user for each rank
+        "user_reactions": {i: {} for i in range(rankings)},
     }
     poll_messages = []
 
@@ -57,7 +62,6 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
             description="React with the emoji corresponding to your choice. You can only select one option.",
             color=0x0000ff,
         )
-        # Send the rank message in the created thread
         rank_message = await poll_thread.send(embed=rank_embed)
         poll_messages.append(rank_message)
 
@@ -76,13 +80,16 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
     poll_data["results_message"] = results_message
     bot.poll_data[results_message.id] = poll_data
 
+
 @bot.event
 async def on_reaction_add(reaction, user):
-    """Handle reactions for ranking slots and enforce one reaction per user, no additional reactions, and no duplicate votes for the same option."""
+    """Handle reactions for ranking slots and enforce one reaction per user, no additional reactions, and no duplicate votes."""
     if user.bot:
         return
 
-    # Find the poll
+    # Log reaction details
+    logging.debug(f"Reaction added: {reaction.emoji} by {user.name}")
+
     for poll_id, poll in bot.poll_data.items():
         if reaction.message.id in [msg.id for msg in poll["poll_messages"]]:
             break
@@ -91,43 +98,42 @@ async def on_reaction_add(reaction, user):
 
     rank_index = poll["poll_messages"].index(reaction.message)
     message = poll["poll_messages"][rank_index]
-    
-    # List of allowed emojis for this poll
-    allowed_emojis = [f"{i + 1}\u20E3" for i in range(len(poll["options"]))]
 
-    # If the reaction is not allowed, remove it
+    allowed_emojis = [f"{i + 1}\u20E3" for i in range(len(poll["options"]))]
     if str(reaction.emoji) not in allowed_emojis:
         await message.remove_reaction(reaction.emoji, user)
         return
 
     try:
-        # Track all options that the user has voted for in any rank
+        # Track user's voted options
         voted_options = set([poll["votes"][rank][user.id] for rank in range(len(poll["votes"])) if user.id in poll["votes"][rank]])
 
-        # If the user has already voted for this option in another rank, remove the reaction and send a message
         emoji_index = allowed_emojis.index(reaction.emoji)
         option = poll["options"][emoji_index]
+        
+        # Log the user's vote attempt
+        logging.debug(f"User {user.name} is voting for {option} in rank {rank_index + 1}")
+
         if option in voted_options:
             await message.remove_reaction(reaction.emoji, user)
             await user.send(f"You cannot vote for the same option in multiple ranks!")
             return
 
-        # Remove any existing reactions from this user on this ranking message
+        # Remove previous reactions
         if user.id in poll["user_reactions"][rank_index]:
             old_emoji = poll["user_reactions"][rank_index][user.id]
             if old_emoji != str(reaction.emoji):
                 await message.remove_reaction(old_emoji, user)
 
-        # Update the tracking of user reactions
+        # Update user reactions
         poll["user_reactions"][rank_index][user.id] = str(reaction.emoji)
-
-        # Record the vote
         poll["votes"][rank_index][user.id] = option
 
         await update_results_message(poll)
         
-    except (discord.HTTPException, discord.Forbidden, discord.NotFound, TypeError) as e:
-        print(f"Error handling reaction: {e}")
+    except Exception as e:
+        logging.error(f"Error handling reaction: {e}")
+
 
 @bot.event
 async def on_reaction_remove(reaction, user):
@@ -143,18 +149,20 @@ async def on_reaction_remove(reaction, user):
 
     rank_index = poll["poll_messages"].index(reaction.message)
 
-    # Remove the user's reaction tracking
+    # Log the removal of a reaction
+    logging.debug(f"Reaction removed: {reaction.emoji} by {user.name}")
+
     if user.id in poll["user_reactions"][rank_index]:
         del poll["user_reactions"][rank_index][user.id]
 
-    # Remove the vote
     if user.id in poll["votes"][rank_index]:
         del poll["votes"][rank_index][user.id]
 
     await update_results_message(poll)
 
+
 async def update_results_message(poll):
-    """Update the live results message with proper tie handling, ordering, and improved bar spacing."""
+    """Update the live results message with detailed logging."""
     rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
     for rank, rank_votes in poll["votes"].items():
         for user_id, option in rank_votes.items():
@@ -162,39 +170,29 @@ async def update_results_message(poll):
 
     winners, final_rankings, elimination_order = ranked_choice_voting(poll["options"], rankings)
 
-    # Create results display
+    # Log intermediate voting rounds for debugging
+    logging.debug(f"Winners: {winners}")
+    logging.debug(f"Final Rankings: {final_rankings}")
+    logging.debug(f"Elimination Order: {elimination_order}")
+
     graph = ""
     max_votes = max((votes for _, _, votes in final_rankings), default=1)
     bar_length = 20  # Length of the bar in characters for the graph
 
-    # Sort final rankings by the number of votes in descending order
     final_rankings.sort(key=lambda x: (-x[2], x[1]))  # Sort by votes (desc), then by rank (asc)
 
-    # Now, create the graph with the sorted results
     for option, rank, votes in final_rankings:
-        # Create the vote bar with fixed length, ensuring alignment
         vote_percentage = (votes * bar_length) // max(max_votes, 1)  # Scale to bar length
         bar = "🟩" * vote_percentage
-        bar = bar.ljust(bar_length)  # Ensure all bars are the same length
+        bar = bar.ljust(bar_length)
 
-        # Add status label
-        if option in winners:
-            status = " (Winner)"
-            if len(winners) > 1:
-                status = " (Tied Winner)"
-        else:
-            round_eliminated = next(round_num for opt, round_num in elimination_order if opt == option)
-            status = f" (Eliminated in Round {round_eliminated})"
-
-            # Check for ties in the same elimination round
-            same_round = [opt for opt, rnd in elimination_order if rnd == round_eliminated]
-            if len(same_round) > 1:
-                status += " - Tied"
+        status = f" (Winner)" if option in winners else f" (Eliminated in Round {next(round_num for opt, round_num in elimination_order if opt == option)})"
         
-        # Add the formatted line to the graph
+        # Log bar generation for each option
+        logging.debug(f"Generated bar for {option}: {bar} with votes {votes}")
+
         graph += f"{option}: {votes} votes {bar} {status}\n"
 
-    # Send the updated results message
     results_embed = discord.Embed(
         title="Current Results (Ranked Choice Voting)",
         description=graph,
@@ -203,41 +201,8 @@ async def update_results_message(poll):
     await poll["results_message"].edit(embed=results_embed)
 
 
-
-def get_preference_count(option, rank, rankings):
-    """Count how many times an option appears at a specific rank."""
-    count = 0
-    for voter_ranks in rankings.values():
-        if len(voter_ranks) > rank and voter_ranks[rank] == option:
-            count += 1
-    return count
-
-def break_tie(tied_options, rankings, round_number):
-    """
-    Break ties by looking at next preference votes.
-    Returns the options in order from should-be-eliminated-first to should-be-eliminated-last.
-    """
-    max_rank = max(len(ranks) for ranks in rankings.values())
-    
-    # For each rank level, get counts for each tied option
-    for rank in range(max_rank):
-        rank_counts = {option: get_preference_count(option, rank, rankings) for option in tied_options}
-        
-        # If counts differ at this rank, sort by these counts
-        if len(set(rank_counts.values())) > 1:
-            return sorted(tied_options, key=lambda x: rank_counts[x])
-    
-    # If we get here, it's a true tie at all ranks
-    return sorted(tied_options)  # Sort alphabetically for consistent ordering
-
 def ranked_choice_voting(options, rankings):
-    """
-    Perform ranked-choice voting with proper tie detection and ordering.
-    Returns:
-    - winners: List of winning options (can be multiple in case of tie)
-    - final_rankings: List of tuples (options, rank, votes) in order of finish
-    - elimination_order: List of (option, round_number) in order of elimination
-    """
+    """Perform ranked-choice voting with detailed logging for debugging."""
     remaining_options = list(options)
     elimination_order = []
     final_rankings = []
@@ -245,53 +210,41 @@ def ranked_choice_voting(options, rankings):
     current_rankings = deepcopy(rankings)
     
     while remaining_options:
-        # Count first-choice votes
         vote_counts = {option: 0 for option in remaining_options}
         for voter_ranks in current_rankings.values():
             for option in voter_ranks:
                 if option in remaining_options:
                     vote_counts[option] += 1
                     break
-        
+
         total_votes = sum(vote_counts.values())
         if total_votes == 0:
-            # No more valid votes, remaining options are tied for last
             rank = len(options) - len(final_rankings)
             final_rankings.extend((opt, rank, 0) for opt in remaining_options)
             for option in remaining_options:
                 elimination_order.append((option, round_number))
             break
-        
-        # Check for winners (options with > 50% of votes)
+
         majority_threshold = total_votes / 2
         winners = [opt for opt, count in vote_counts.items() if count > majority_threshold]
         
+        # Log vote counts and winners
+        logging.debug(f"Round {round_number}: Vote counts: {vote_counts}")
+        logging.debug(f"Round {round_number}: Winners: {winners}")
+
         if winners:
-            # We have winner(s)
             rank = len(options) - len(final_rankings)
             final_rankings.extend((opt, rank, vote_counts[opt]) for opt in winners)
-            
-            # Rank remaining options by their final vote counts
             remaining = set(remaining_options) - set(winners)
-            if remaining:
-                remaining_sorted = sorted(remaining, key=lambda x: vote_counts[x], reverse=True)
-                current_votes = None
-                current_rank = rank + 1
-                
-                for option in remaining_sorted:
-                    if current_votes != vote_counts[option]:
-                        current_votes = vote_counts[option]
-                        current_rank = len(options) - len(final_rankings)
-                    final_rankings.append((option, current_rank, vote_counts[option]))
-                    elimination_order.append((option, round_number))
-            
+            remaining_sorted = sorted(remaining, key=lambda x: vote_counts[x], reverse=True)
+            for option in remaining_sorted:
+                final_rankings.append((option, rank + 1, vote_counts[option]))
+                elimination_order.append((option, round_number))
             return winners, final_rankings, elimination_order
-        
-        # Find options with fewest votes
+
         min_votes = min(vote_counts.values())
         to_eliminate = [opt for opt, count in vote_counts.items() if count == min_votes]
-        
-        # All options with same minimum votes are eliminated together
+
         rank = len(options) - len(final_rankings)
         for option in to_eliminate:
             final_rankings.append((option, rank, vote_counts[option]))
@@ -300,13 +253,13 @@ def ranked_choice_voting(options, rankings):
         
         round_number += 1
         
-        # If only one option remains, it's the winner
         if len(remaining_options) == 1:
             winner = remaining_options[0]
             final_rankings.append((winner, 1, vote_counts[winner]))
             return [winner], final_rankings, elimination_order
     
     return [], final_rankings, elimination_order
+
 
 bot.poll_data = {}
 bot.run("")
