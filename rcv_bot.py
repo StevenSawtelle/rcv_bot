@@ -55,7 +55,6 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
         "user_reactions": {i: {} for i in range(rankings)},
     }
     poll_messages = []
-
     for rank in range(1, rankings + 1):
         rank_embed = discord.Embed(
             title=f"Rank {rank}",
@@ -66,8 +65,14 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
         poll_messages.append(rank_message)
 
         emojis = [f"{i + 1}\u20E3" for i in range(len(options))]
+
+        await rank_message.clear_reactions()
+
         for emoji in emojis:
-            await rank_message.add_reaction(emoji)
+            try:
+                await rank_message.add_reaction(emoji)
+            except discord.Forbidden:
+                print("Bot lacks permission to manage reactions.")
 
     results_embed = discord.Embed(
         title="Current Results",
@@ -193,10 +198,12 @@ async def update_results_message(poll):
 
         graph += f"{option}: {votes} votes {bar} {status}\n"
 
+    elimination_details = "\n".join(f"Round {round_num}: {option}" for option, round_num in elimination_order)
+
     results_embed = discord.Embed(
-        title="Current Results (Ranked Choice Voting)",
-        description=graph,
-        color=0xffa500
+        title="Current Poll Results",
+        description=f"{graph}\n\nElimination Details:\n{elimination_details}",
+        color=0xffa500,
     )
     await poll["results_message"].edit(embed=results_embed)
 
@@ -261,5 +268,9 @@ def ranked_choice_voting(options, rankings):
     return [], final_rankings, elimination_order
 
 
+# Read bot token from a secret file
+with open("secret.txt", "r") as file:
+    bot_token = file.read().strip()
+
 bot.poll_data = {}
-bot.run("")
+bot.run(bot_token)
