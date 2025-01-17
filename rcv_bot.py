@@ -40,7 +40,7 @@ async def simulate_votes(ctx):
             poll["votes"].setdefault(rank, {})[user_id] = option
 
     await update_results_message(poll)
-    await ctx.send("Simulated votes added and results updated!")
+    # await ctx.send("Simulated votes added and results updated!")
 
 
 @bot.command()
@@ -216,16 +216,31 @@ async def update_results_message(poll):
     print(all_vote_counts)
 
     # Clear all messages in the thread
-    # async for message in poll["results_thread"].history(limit=None):
-    #     await message.delete()
+    async for message in poll["results_thread"].history(limit=None):
+        logging.debug(f"Deleting message: {message.content} by {message.author}")
+        if message.content:
+            await message.delete()
+    
+    results_embed = discord.Embed(
+        title="Current Results",
+        description=f"Current winner is {winners[0]}! See thread for round by round breakdown.",
+        color=0xffa500
+    )
+    await poll["results_message"].edit(embed=results_embed)
 
     # Post messages for each round
     for round_index, x in enumerate(elimination_order):
         round_num = round_index + 1
         options = [item[0] for item in final_rankings]
         vote_counts = [all_vote_counts[round_index].get(option, 0) for option in options]
+
+        # Sort options and vote_counts by vote_counts in descending order
+        sorted_data = sorted(zip(options, vote_counts), key=lambda x: x[1], reverse=True)
+        sorted_options, sorted_vote_counts = zip(*sorted_data)
+
+
         plt.figure(figsize=(12, 8))
-        bars = plt.barh(options, vote_counts, color="cornflowerblue", edgecolor="black")
+        bars = plt.barh(sorted_options, sorted_vote_counts, color="cornflowerblue", edgecolor="black")
 
         for bar in bars:
             plt.text(
@@ -253,7 +268,7 @@ async def update_results_message(poll):
         file = discord.File(buf, filename=f"results_round_{round_num}.png")
         embed = discord.Embed(
             title=f"Poll Results - Round {round_num}",
-            description="Vote distribution at this round:",
+            description="Vote distribution for this round:",
             color=0xffa500,
         )
         embed.set_image(url=f"attachment://results_round_{round_num}.png")
