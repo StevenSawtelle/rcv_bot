@@ -14,6 +14,9 @@ intents.members = True
 intents.message_content = True
 intents.reactions = True
 
+# font for charts
+plt.rcParams["font.family"] = "American Typewriter"  # Replace with a fun font available in your environment
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
@@ -220,15 +223,9 @@ async def update_results_message(poll):
             rankings[user_id].append(option)
 
     winners, final_rankings, elimination_order, all_vote_counts = ranked_choice_voting(poll["options"], rankings)
-    print("winners")
-    print(winners)
-    print("final_rankings")
-    print(final_rankings)
-    print("elimination_order")
-    print(elimination_order)
-    print("all_vote_counts")
-    print(all_vote_counts)
 
+    # Assign consistent colors to options
+    options_color_map = {option: plt.cm.tab10(i % 10) for i, option in enumerate(poll["options"])}
 
     # Update the main results message
     results_embed = discord.Embed(
@@ -242,7 +239,6 @@ async def update_results_message(poll):
     if "result_messages" not in poll:
         poll["result_messages"] = []
 
-    # Iterate over the elimination rounds and update/create messages
     for round_index, round_data in enumerate(elimination_order):
         round_num = round_index + 1
 
@@ -253,33 +249,56 @@ async def update_results_message(poll):
         sorted_data = sorted(zip(options, vote_counts), key=lambda x: x[1], reverse=True)
         sorted_options, sorted_vote_counts = zip(*sorted_data)
 
-        print("round_data")
-        print(round_data)
         eliminated_option = round_data[0]  # Get the eliminated option for this round
 
         # Generate the bar chart
-        plt.figure(figsize=(12, 8))
-        bars = plt.barh(sorted_options, sorted_vote_counts, color="cornflowerblue", edgecolor="black")
+        plt.figure(figsize=(8, 6))
+        bars = plt.barh(
+            sorted_options,
+            sorted_vote_counts,
+            color=[options_color_map[option] for option in sorted_options],
+            edgecolor="black"
+        )
 
+        # Adjust text inside the bounding box of the graph
         for bar in bars:
             plt.text(
-                bar.get_width() + 0.1,
+                bar.get_width() - 0.2 if bar.get_width() > 0.5 else bar.get_width() + 0.2,
                 bar.get_y() + bar.get_height() / 2,
                 f"{int(bar.get_width())}",
                 va="center",
-                fontsize=10,
-                color="black",
+                ha="right" if bar.get_width() > 0.5 else "left",
+                fontsize=12,
+                weight="bold",
+                color="darkblue"
             )
 
-        plt.xlabel("Votes", fontsize=14, weight="bold")
-        plt.ylabel("Options", fontsize=14, weight="bold")
-        plt.title(f"Poll Results - Round {round_num}", fontsize=16, weight="bold")
+        # Wrap long option text on spaces only
+        def wrap_text(text, width=20):
+            words = text.split()
+            lines, current_line = [], ""
+            for word in words:
+                if len(current_line) + len(word) + 1 > width:
+                    lines.append(current_line.strip())
+                    current_line = word
+                else:
+                    current_line += " " + word
+            lines.append(current_line.strip())
+            return "\n".join(lines)
+
+        wrapped_options = [wrap_text(opt, width=20) for opt in sorted_options]
+        plt.gca().set_yticks(range(len(wrapped_options)))
+        plt.gca().set_yticklabels(wrapped_options, fontsize=12, color="darkblue", weight="bold")
+
+        plt.xlabel("Votes", fontsize=16, weight="bold", labelpad=10, color="darkblue")
+        plt.ylabel("Options", fontsize=16, weight="bold", labelpad=10, color="darkblue")
+        plt.title(f"Poll Results - Round {round_num}", fontsize=20, weight="bold", color="navy")
         plt.gca().invert_yaxis()
-        plt.grid(axis="x", linestyle="--", alpha=0.7)
+        plt.gca().xaxis.set_major_locator(plt.MaxNLocator(integer=True))
         plt.tight_layout()
 
         buf = io.BytesIO()
-        plt.savefig(buf, format="png", dpi=300)
+        plt.savefig(buf, format="png", dpi=200)
         buf.seek(0)
         plt.close()
 
