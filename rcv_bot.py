@@ -109,9 +109,12 @@ async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
         color=0xffa500,
     )
     results_message = await ctx.send(embed=results_embed)
+    results_thread = await results_message.create_thread(name="Poll Results")
+
 
     poll_data["poll_messages"] = poll_messages
     poll_data["results_message"] = results_message
+    poll_data["results_thread"] = results_thread
     bot.poll_data[results_message.id] = poll_data
 
 
@@ -196,63 +199,66 @@ async def on_reaction_remove(reaction, user):
 
 
 async def update_results_message(poll):
-    """Update the live results message with a dynamically generated bar chart."""
+    """Update the thread with messages showing the vote spread at each round."""
     rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
     for rank, rank_votes in poll["votes"].items():
         for user_id, option in rank_votes.items():
             rankings[user_id].append(option)
 
-    winners, final_rankings, elimination_order = ranked_choice_voting(poll["options"], rankings)
+    winners, final_rankings, elimination_order, all_vote_counts = ranked_choice_voting(poll["options"], rankings)
+    print("wiiners")
+    print(winners)
+    print("final_rankings")
+    print(final_rankings)
+    print("elimination_order")
+    print(elimination_order)
+    print("all_vote_counts")
+    print(all_vote_counts)
 
-    # Prepare data for the bar chart
-    final_rankings.sort(key=lambda x: (-x[2], x[1]))  # Sort by votes (desc), then by rank (asc)
-    options = [opt for opt, _, _ in final_rankings]
-    votes = [v for _, _, v in final_rankings]
+    # Clear all messages in the thread
+    # async for message in poll["results_thread"].history(limit=None):
+    #     await message.delete()
 
-    # Create the bar chart with improved aesthetics
-    plt.figure(figsize=(12, 8))
-    bars = plt.barh(options, votes, color="cornflowerblue", edgecolor="black")
+    # Post messages for each round
+    for round_index, x in enumerate(elimination_order):
+        round_num = round_index + 1
+        options = [item[0] for item in final_rankings]
+        vote_counts = [all_vote_counts[round_index].get(option, 0) for option in options]
+        plt.figure(figsize=(12, 8))
+        bars = plt.barh(options, vote_counts, color="cornflowerblue", edgecolor="black")
 
-    # Add value labels to the bars
-    for bar in bars:
-        plt.text(
-            bar.get_width() + 0.1,  # Position slightly to the right of the bar
-            bar.get_y() + bar.get_height() / 2,  # Center vertically
-            f"{int(bar.get_width())}",  # Display the vote count
-            va="center",
-            fontsize=10,
-            color="black",
+        for bar in bars:
+            plt.text(
+                bar.get_width() + 0.1,
+                bar.get_y() + bar.get_height() / 2,
+                f"{int(bar.get_width())}",
+                va="center",
+                fontsize=10,
+                color="black",
+            )
+
+        plt.xlabel("Votes", fontsize=14, weight="bold")
+        plt.ylabel("Options", fontsize=14, weight="bold")
+        plt.title(f"Poll Results - Round {round_num}", fontsize=16, weight="bold")
+        plt.gca().invert_yaxis()
+        plt.grid(axis="x", linestyle="--", alpha=0.7)
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=300)
+        buf.seek(0)
+        plt.close()
+
+        # Send the bar chart as an image in the thread
+        file = discord.File(buf, filename=f"results_round_{round_num}.png")
+        embed = discord.Embed(
+            title=f"Poll Results - Round {round_num}",
+            description="Vote distribution at this round:",
+            color=0xffa500,
         )
+        embed.set_image(url=f"attachment://results_round_{round_num}.png")
 
-    # Enhance axis labels and title
-    plt.xlabel("Votes", fontsize=14, weight="bold")
-    plt.ylabel("Options", fontsize=14, weight="bold")
-    plt.title("Poll Results", fontsize=16, weight="bold")
-
-    # Adjust layout for better readability
-    plt.gca().invert_yaxis()  # Invert y-axis to show the highest vote at the top
-    plt.grid(axis="x", linestyle="--", alpha=0.7)
-    plt.tight_layout()
-
-    # Save the plot to a BytesIO object
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=300)
-    buf.seek(0)
-    plt.close()
-
-    # Generate elimination details
-    elimination_details = "\n".join(f"Round {round_num}: {option}" for option, round_num in elimination_order)
-
-    # Send the bar chart as an image in the embed
-    file = discord.File(buf, filename="results.png")
-    results_embed = discord.Embed(
-        title="Current Poll Results",
-        description=f"See the attached chart for the current standings.\n\nElimination Details:\n{elimination_details}",
-        color=0xffa500,
-    )
-    results_embed.set_image(url="attachment://results.png")
-
-    await poll["results_message"].edit(embed=results_embed, attachments=[file])
+        await poll["results_thread"].send(embed=embed, file=file)
 
 
 
@@ -263,6 +269,7 @@ def ranked_choice_voting(options, rankings):
     final_rankings = []
     round_number = 1
     current_rankings = deepcopy(rankings)
+    all_vote_counts = []
     
     while remaining_options:
         vote_counts = {option: 0 for option in remaining_options}
@@ -271,7 +278,9 @@ def ranked_choice_voting(options, rankings):
                 if option in remaining_options:
                     vote_counts[option] += 1
                     break
-
+        all_vote_counts.append(vote_counts)
+        # print("vote_counts")
+        # print(vote_counts)
         total_votes = sum(vote_counts.values())
         if total_votes == 0:
             rank = len(options) - len(final_rankings)
@@ -295,7 +304,7 @@ def ranked_choice_voting(options, rankings):
             for option in remaining_sorted:
                 final_rankings.append((option, rank + 1, vote_counts[option]))
                 elimination_order.append((option, round_number))
-            return winners, final_rankings, elimination_order
+            return winners, final_rankings, elimination_order, all_vote_counts
 
         min_votes = min(vote_counts.values())
         to_eliminate = [opt for opt, count in vote_counts.items() if count == min_votes]
@@ -311,9 +320,9 @@ def ranked_choice_voting(options, rankings):
         if len(remaining_options) == 1:
             winner = remaining_options[0]
             final_rankings.append((winner, 1, vote_counts[winner]))
-            return [winner], final_rankings, elimination_order
+            return [winner], final_rankings, elimination_order, all_vote_counts
     
-    return [], final_rankings, elimination_order
+    return [], final_rankings, elimination_order, all_vote_counts
 
 
 # Read bot token from a secret file
