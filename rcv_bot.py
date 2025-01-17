@@ -1,4 +1,6 @@
 import discord
+import matplotlib.pyplot as plt
+import io
 from discord.ext import commands
 import asyncio
 from copy import deepcopy
@@ -13,6 +15,33 @@ intents.message_content = True
 intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.command()
+async def simulate_votes(ctx):
+    poll_id = list(bot.poll_data.keys())[0]  # Get the first poll (adjust as needed)
+    poll = bot.poll_data[poll_id]
+    
+    # Ensure options align with poll's actual options
+    options = poll["options"]  # This should match the parsed options from the poll
+    simulated_rankings = {
+        1: [options[0], options[1], options[2], options[3]], # e f g c
+        2: [options[0], options[1], options[2], options[3]], # e f g c
+        3: [options[0], options[1], options[2], options[3]], # e f g c
+        4: [options[1], options[0], options[2], options[3]], # f e g c
+        5: [options[1], options[0], options[2], options[3]], # f e g c
+        6: [options[1], options[0], options[2], options[3]], # f e g c
+        7: [options[2], options[0], options[1], options[3]], # g e f c
+        8: [options[2], options[0], options[1], options[3]], # g e f c
+        9: [options[3], options[1], options[0], options[2]], # c f e g
+    }
+
+    for user_id, ranks in simulated_rankings.items():
+        for rank, option in enumerate(ranks):
+            poll["votes"].setdefault(rank, {})[user_id] = option
+
+    await update_results_message(poll)
+    await ctx.send("Simulated votes added and results updated!")
+
 
 @bot.command()
 async def ranked_poll(ctx, title: str, rankings: int, *raw_options):
@@ -167,7 +196,7 @@ async def on_reaction_remove(reaction, user):
 
 
 async def update_results_message(poll):
-    """Update the live results message with detailed logging."""
+    """Update the live results message with a dynamically generated bar chart."""
     rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
     for rank, rank_votes in poll["votes"].items():
         for user_id, option in rank_votes.items():
@@ -175,37 +204,56 @@ async def update_results_message(poll):
 
     winners, final_rankings, elimination_order = ranked_choice_voting(poll["options"], rankings)
 
-    # Log intermediate voting rounds for debugging
-    logging.debug(f"Winners: {winners}")
-    logging.debug(f"Final Rankings: {final_rankings}")
-    logging.debug(f"Elimination Order: {elimination_order}")
-
-    graph = ""
-    max_votes = max((votes for _, _, votes in final_rankings), default=1)
-    bar_length = 20  # Length of the bar in characters for the graph
-
+    # Prepare data for the bar chart
     final_rankings.sort(key=lambda x: (-x[2], x[1]))  # Sort by votes (desc), then by rank (asc)
+    options = [opt for opt, _, _ in final_rankings]
+    votes = [v for _, _, v in final_rankings]
 
-    for option, rank, votes in final_rankings:
-        vote_percentage = (votes * bar_length) // max(max_votes, 1)  # Scale to bar length
-        bar = "🟩" * vote_percentage
-        bar = bar.ljust(bar_length)
+    # Create the bar chart with improved aesthetics
+    plt.figure(figsize=(12, 8))
+    bars = plt.barh(options, votes, color="cornflowerblue", edgecolor="black")
 
-        status = f" (Winner)" if option in winners else f" (Eliminated in Round {next(round_num for opt, round_num in elimination_order if opt == option)})"
-        
-        # Log bar generation for each option
-        logging.debug(f"Generated bar for {option}: {bar} with votes {votes}")
+    # Add value labels to the bars
+    for bar in bars:
+        plt.text(
+            bar.get_width() + 0.1,  # Position slightly to the right of the bar
+            bar.get_y() + bar.get_height() / 2,  # Center vertically
+            f"{int(bar.get_width())}",  # Display the vote count
+            va="center",
+            fontsize=10,
+            color="black",
+        )
 
-        graph += f"{option}: {votes} votes {bar} {status}\n"
+    # Enhance axis labels and title
+    plt.xlabel("Votes", fontsize=14, weight="bold")
+    plt.ylabel("Options", fontsize=14, weight="bold")
+    plt.title("Poll Results", fontsize=16, weight="bold")
 
+    # Adjust layout for better readability
+    plt.gca().invert_yaxis()  # Invert y-axis to show the highest vote at the top
+    plt.grid(axis="x", linestyle="--", alpha=0.7)
+    plt.tight_layout()
+
+    # Save the plot to a BytesIO object
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=300)
+    buf.seek(0)
+    plt.close()
+
+    # Generate elimination details
     elimination_details = "\n".join(f"Round {round_num}: {option}" for option, round_num in elimination_order)
 
+    # Send the bar chart as an image in the embed
+    file = discord.File(buf, filename="results.png")
     results_embed = discord.Embed(
         title="Current Poll Results",
-        description=f"{graph}\n\nElimination Details:\n{elimination_details}",
+        description=f"See the attached chart for the current standings.\n\nElimination Details:\n{elimination_details}",
         color=0xffa500,
     )
-    await poll["results_message"].edit(embed=results_embed)
+    results_embed.set_image(url="attachment://results.png")
+
+    await poll["results_message"].edit(embed=results_embed, attachments=[file])
+
 
 
 def ranked_choice_voting(options, rankings):
