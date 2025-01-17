@@ -206,31 +206,23 @@ async def update_results_message(poll):
             rankings[user_id].append(option)
 
     winners, final_rankings, elimination_order, all_vote_counts = ranked_choice_voting(poll["options"], rankings)
-    print("wiiners")
-    print(winners)
-    print("final_rankings")
-    print(final_rankings)
-    print("elimination_order")
-    print(elimination_order)
-    print("all_vote_counts")
-    print(all_vote_counts)
 
-    # Clear all messages in the thread
-    async for message in poll["results_thread"].history(limit=None):
-        logging.debug(f"Deleting message: {message.content} by {message.author}")
-        if message.content:
-            await message.delete()
-    
+    # Update the main results message
     results_embed = discord.Embed(
         title="Current Results",
-        description=f"Current winner is {winners[0]}! See thread for round by round breakdown.",
+        description=f"Current winner is {winners[0]}! See thread for round-by-round breakdown.",
         color=0xffa500
     )
     await poll["results_message"].edit(embed=results_embed)
 
-    # Post messages for each round
-    for round_index, x in enumerate(elimination_order):
+    # Maintain a list of result messages to update or create new ones if necessary
+    if "result_messages" not in poll:
+        poll["result_messages"] = []
+
+    # Iterate over the elimination rounds and update/create messages
+    for round_index, round_data in enumerate(elimination_order):
         round_num = round_index + 1
+
         options = [item[0] for item in final_rankings]
         vote_counts = [all_vote_counts[round_index].get(option, 0) for option in options]
 
@@ -238,7 +230,7 @@ async def update_results_message(poll):
         sorted_data = sorted(zip(options, vote_counts), key=lambda x: x[1], reverse=True)
         sorted_options, sorted_vote_counts = zip(*sorted_data)
 
-
+        # Generate the bar chart
         plt.figure(figsize=(12, 8))
         bars = plt.barh(sorted_options, sorted_vote_counts, color="cornflowerblue", edgecolor="black")
 
@@ -264,16 +256,28 @@ async def update_results_message(poll):
         buf.seek(0)
         plt.close()
 
-        # Send the bar chart as an image in the thread
-        file = discord.File(buf, filename=f"results_round_{round_num}.png")
-        embed = discord.Embed(
-            title=f"Poll Results - Round {round_num}",
-            description="Vote distribution for this round:",
-            color=0xffa500,
-        )
-        embed.set_image(url=f"attachment://results_round_{round_num}.png")
+        # Update an existing message or send a new one
+        if round_index < len(poll["result_messages"]):
+            message_to_edit = poll["result_messages"][round_index]
+            file = discord.File(buf, filename=f"results_round_{round_num}.png")
+            embed = discord.Embed(
+                title=f"Poll Results - Round {round_num}",
+                description="Vote distribution for this round:",
+                color=0xffa500,
+            )
+            embed.set_image(url=f"attachment://results_round_{round_num}.png")
+            await message_to_edit.edit(embed=embed, attachments=[file])
+        else:
+            file = discord.File(buf, filename=f"results_round_{round_num}.png")
+            embed = discord.Embed(
+                title=f"Poll Results - Round {round_num}",
+                description="Vote distribution for this round:",
+                color=0xffa500,
+            )
+            embed.set_image(url=f"attachment://results_round_{round_num}.png")
+            new_message = await poll["results_thread"].send(embed=embed, file=file)
+            poll["result_messages"].append(new_message)
 
-        await poll["results_thread"].send(embed=embed, file=file)
 
 
 
