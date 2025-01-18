@@ -20,6 +20,50 @@ plt.rcParams["font.family"] = "American Typewriter"  # Replace with a fun font a
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.command()
+async def close_poll(ctx):
+    """Ends the most recently created poll and finalizes results."""
+    if not bot.poll_data:
+        await ctx.send("No active polls to close.")
+        return
+
+    # Get the last poll created
+    poll_id = list(bot.poll_data.keys())[-1]
+    poll = bot.poll_data[poll_id]
+
+    # Finalize results
+    rankings = {user_id: [] for rank_votes in poll["votes"].values() for user_id in rank_votes.keys()}
+    for rank, rank_votes in poll["votes"].items():
+        for user_id, option in rank_votes.items():
+            rankings[user_id].append(option)
+
+    winners, final_rankings, elimination_order, all_vote_counts = ranked_choice_voting(poll["options"], rankings)
+
+    # Sort final rankings by the number of votes in descending order
+    sorted_final_rankings = sorted(final_rankings, key=lambda x: x[2], reverse=True)
+
+    # Create final results embed
+    final_embed = discord.Embed(
+        title="Poll Closed: Final Results",
+        description="The poll has ended, and the final results are in!",
+        color=0x00ff00
+    )
+
+    final_embed.add_field(name="Winner", value=winners[0] if winners else "No winner", inline=False)
+
+    # Format the sorted final rankings
+    final_ranking_text = "\n".join(
+        f"{i + 1}. {option} - {votes} votes" for i, (option, rank, votes) in enumerate(sorted_final_rankings)
+    )
+    final_embed.add_field(name="Final Rankings", value=final_ranking_text, inline=False)
+
+    # Send final results as its own message
+    await ctx.send(embed=final_embed)
+
+    # Delete poll data to free up resources
+    del bot.poll_data[poll_id]
+
+
+@bot.command()
 async def simulate_votes(ctx, choice):
     poll_id = list(bot.poll_data.keys())[0]  # Get the first poll (adjust as needed)
     poll = bot.poll_data[poll_id]
